@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import { DeferredTaskPayloadSchema } from './types.js';
 import { scheduleDeferredTask, startWorker } from './queue.js';
 import { logTaskToSupabase } from './db.js';
+import { scheduleAwsEventBridgeTask } from './aws_scheduler.js';
 
 dotenv.config();
 
@@ -27,16 +28,22 @@ app.post('/schedule_task', async (req: Request, res: Response): Promise<void> =>
     }
 
     const payload = parseResult.data;
+    
+    // 1. Schedule locally in BullMQ (Redis)
     const job = await scheduleDeferredTask(payload);
 
-    // Persist scheduled event to Supabase
+    // 2. Schedule in Cloud via AWS EventBridge Scheduler (Dual-Tier Timers)
+    await scheduleAwsEventBridgeTask(payload);
+
+    // 3. Persist scheduled event state in Supabase
     await logTaskToSupabase(payload.taskId, payload, 'scheduled');
 
     res.status(200).json({
       status: 'scheduled',
       jobId: job.id,
       taskId: payload.taskId,
-      targetTime: payload.targetTime
+      targetTime: payload.targetTime,
+      orchestration: 'Hybrid (AWS EventBridge + BullMQ/Redis + Supabase DB)'
     });
   } catch (error: any) {
     console.error('[Server Error]:', error);
